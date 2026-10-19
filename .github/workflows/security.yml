@@ -43,7 +43,7 @@ jobs:
       - name: Semgrep (общий пак Python)
         if: ${{ !cancelled() }}
         run: semgrep --config p/python --error .
-      - name: Semgrep (собственное правило: debug в FastAPI)
+      - name: Semgrep (собственное правило для debug в FastAPI)
         if: ${{ !cancelled() }}
         run: semgrep --config .semgrep/fastapi-debug.yml --error .
 
@@ -242,5 +242,5 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     steps:
-      - name: Развёртывание (заглушка: реестр и кластер не подключены)
+      - name: Развёртывание (заглушка, реестр и кластер не подключены)
         run: echo "Все 7 ворот пройдены — образ vulntrack:${{ github.sha }} допущен к развёртыванию"
