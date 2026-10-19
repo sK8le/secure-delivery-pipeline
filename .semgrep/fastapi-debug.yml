@@ -1,0 +1,14 @@
+rules:
+  - id: fastapi-debug-enabled
+    languages: [python]
+    severity: ERROR
+    message: >
+      FastAPI создаётся с параметром debug, значение которого не
+      зафиксировано жёстко в False. В рабочей сборке отладочный режим
+      обязан быть исключён на уровне кода (CWE-489).
+    patterns:
+      - pattern: FastAPI(..., debug=$X, ...)
+      - metavariable-pattern:
+          metavariable: $X
+          patterns:
+            - pattern-not: "False"

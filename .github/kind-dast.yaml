@@ -1,0 +1,11 @@
+# Кластер для DAST в CI: NodePort 30080 публикуется на 127.0.0.1 раннера.
+# Порт опубликован только на loopback раннера — наружу не торчит.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 30080
+        listenAddress: "127.0.0.1"
+        protocol: TCP

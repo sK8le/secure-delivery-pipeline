@@ -1,0 +1,10 @@
+title = "VulnTrack gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "vulntrack-hardcoded-secret-key"
+description = "Ключ подписи сессий VulnTrack, заданный строкой в коде"
+regex = '''(?i)SECRET_KEY\s*=\s*["\']([^"\']{8,})["\']'''
+tags = ["secret", "vulntrack"]

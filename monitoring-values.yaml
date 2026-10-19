@@ -1,0 +1,41 @@
+# Параметры Helm-чарта kube-prometheus-stack (пространство имён monitoring).
+# Перед установкой создайте секреты:
+#   kubectl -n monitoring create secret generic grafana-admin \
+#     --from-literal=admin-user=admin --from-literal=admin-password="$(openssl rand -hex 16)"
+#   kubectl -n monitoring create secret generic vulntrack-telegram --from-literal=token=<токен бота>
+grafana:
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+
+alertmanager:
+  alertmanagerSpec:
+    secrets:
+      - vulntrack-telegram          # монтируется в /etc/alertmanager/secrets/vulntrack-telegram/
+  config:
+    route:
+      receiver: 'null'
+      group_by: ['alertname']
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 2h
+      routes:
+        - receiver: 'null'
+          matchers:
+            - alertname = "Watchdog"
+        - receiver: 'telegram'
+          matchers:
+            - app = "vulntrack"
+    receivers:
+      - name: 'null'
+      - name: 'telegram'
+        telegram_configs:
+          - bot_token_file: /etc/alertmanager/secrets/vulntrack-telegram/token
+            chat_id: 0                # замените на ID своего чата
+            parse_mode: HTML
+            send_resolved: true
+            message: |-
+              🚨 <b>{{ .CommonLabels.alertname }}</b>
+              {{ range .Alerts }}{{ .Annotations.summary }}
+              {{ .Annotations.description }}{{ end }}

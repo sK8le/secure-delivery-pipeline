@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}VulnTrack{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">VulnTrack</a>
+    {% if user %}
+      <nav>
+        <a href="/vulnerabilities">Уязвимости</a>
+        <a href="/search">Поиск</a>
+        <a href="/import">Импорт отчёта</a>
+        <a href="/tools/cvss-calc">Калькулятор CVSS</a>
+        <span class="user">{{ user.username }} ({{ user.team }})</span>
+        <a href="/logout">Выйти</a>
+      </nav>
+    {% endif %}
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

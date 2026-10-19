@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Вход — VulnTrack{% endblock %}
+{% block content %}
+<h1>Вход</h1>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<form method="post" action="/login">
+  <label>Имя пользователя <input type="text" name="username" required></label>
+  <label>Пароль <input type="password" name="password" required></label>
+  <button type="submit">Войти</button>
+</form>
+<p>Нет аккаунта? <a href="/register">Зарегистрироваться</a></p>
+{% endblock %}

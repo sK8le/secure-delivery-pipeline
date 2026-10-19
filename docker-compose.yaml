@@ -1,0 +1,32 @@
+# Локальный запуск: cp .env.example .env, заполнить значения, затем docker compose up --build
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: vulntrack
+      POSTGRES_USER: vulntrack
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vulntrack -d vulntrack"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg2://vulntrack:${POSTGRES_PASSWORD}@db:5432/vulntrack
+      VULNTRACK_SECRET_KEY: ${VULNTRACK_SECRET_KEY:?задайте VULNTRACK_SECRET_KEY в .env}
+      VULNTRACK_COOKIE_SECURE: "false"   # локально без HTTPS
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

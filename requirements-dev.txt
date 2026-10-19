@@ -1,0 +1,5 @@
+pytest==7.4.3
+httpx==0.24.1
+bandit==1.8.0
+semgrep
+pip-audit

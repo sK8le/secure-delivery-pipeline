@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Уязвимости — VulnTrack{% endblock %}
+{% block content %}
+<h1>Уязвимости</h1>
+{% if items %}
+<table class="grid">
+  <thead>
+    <tr><th>ID</th><th>CVE</th><th>Название</th><th>CVSS</th><th>Серьёзность</th><th>Статус</th><th>Актив</th></tr>
+  </thead>
+  <tbody>
+    {% for v in items %}
+    <tr>
+      <td><a href="/vulnerability/{{ v.id }}">{{ v.id }}</a></td>
+      <td>{{ v.cve_id }}</td>
+      <td>{{ v.title }}</td>
+      <td>{{ v.cvss_score }}</td>
+      <td class="sev sev-{{ v.severity }}">{{ v.severity }}</td>
+      <td>{{ v.status }}</td>
+      <td>{{ v.asset.name }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>Записей пока нет. Импортируйте отчёт сканера на странице «Импорт отчёта».</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Калькулятор CVSS — VulnTrack{% endblock %}
+{% block content %}
+<h1>Калькулятор CVSS v3</h1>
+<p>Введите вектор CVSS v3 для расчёта базовой оценки.</p>
+<form method="get" action="/tools/cvss-calc">
+  <input type="text" name="expr" value="{{ expr }}" placeholder="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H">
+  <button type="submit">Вычислить</button>
+</form>
+{% if result is not none %}<p class="ok">Результат: {{ result }}</p>{% endif %}
+{% if error %}<p class="error">Ошибка: {{ error }}</p>{% endif %}
+{% endblock %}

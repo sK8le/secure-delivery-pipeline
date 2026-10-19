@@ -1,0 +1,26 @@
+# 1. По умолчанию запретить весь входящий трафик в пространстве имён
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: vulntrack
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# 2. К базе данных разрешить обращаться только подам приложения
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-db-from-web-only
+  namespace: vulntrack
+spec:
+  podSelector:
+    matchLabels: { app: db }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: vulntrack-web }
+      ports:
+        - port: 5432

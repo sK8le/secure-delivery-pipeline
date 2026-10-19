@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vulntrack-web
+  namespace: vulntrack
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: vulntrack-web }
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0   # ни один под не выключается раньше, чем поднялся новый
+      maxSurge: 1
+  template:
+    metadata:
+      labels: { app: vulntrack-web }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      automountServiceAccountToken: false   # токен API приложению не нужен
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001   # тот же uid, что у appuser в Dockerfile
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: web
+          image: vulntrack:local
+          imagePullPolicy: IfNotPresent   # образ загружается в кластер: minikube image load vulntrack:local
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+          - name: POSTGRES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: vulntrack-secret
+                key: POSTGRES_PASSWORD
+          - name: VULNTRACK_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: vulntrack-app-secret
+                key: VULNTRACK_SECRET_KEY
+          - name: VULNTRACK_COOKIE_SECURE
+            value: "false"   # стенд без TLS; за HTTPS-ингрессом установить "true"
+          - name: DATABASE_URL
+            value: "postgresql+psycopg2://vulntrack:$(POSTGRES_PASSWORD)@db:5432/vulntrack"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5        # по умолчанию 1 с: под нагрузкой bcrypt давало ложные перезапуски
+            failureThreshold: 5      # по умолчанию 3
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3        # по умолчанию 1 с
+            failureThreshold: 5      # по умолчанию 3
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 256Mi }   # запас CPU под bcrypt
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vulntrack-web
+  namespace: vulntrack
+  labels: { app: vulntrack-web }   # по этой метке сервис находит ServiceMonitor
+spec:
+  type: ClusterIP
+  selector: { app: vulntrack-web }
+  ports:
+    - port: 80
+      targetPort: 8000
+      name: http

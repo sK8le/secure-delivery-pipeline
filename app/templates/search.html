@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Поиск — VulnTrack{% endblock %}
+{% block content %}
+<h1>Поиск уязвимостей</h1>
+<form method="get" action="/search">
+  <input type="text" name="q" value="{{ query }}" placeholder="Название или CVE">
+  <button type="submit">Искать</button>
+</form>
+{% if query %}
+<p>Результаты по запросу «{{ query }}»:</p>
+{% endif %}
+{% if results %}
+<ul>
+  {% for v in results %}
+  <li><a href="/vulnerability/{{ v.id }}">{{ v.cve_id }} — {{ v.title }}</a></li>
+  {% endfor %}
+</ul>
+{% elif query %}
+<p>Ничего не найдено.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,20 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: vulntrack-bruteforce
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: vulntrack-security
+      rules:
+        - alert: VulnTrackBruteForce
+          expr: sum(rate(vulntrack_login_attempts_total{result="failure"}[2m])) > 0.1
+          for: 1m
+          labels:
+            severity: critical
+            app: vulntrack
+          annotations:
+            summary: "Подозрение на подбор пароля в VulnTrack"
+            description: "Высокая скорость неудачных входов: {{ $value | printf \"%.2f\" }}/сек за 2 минуты."

@@ -1,0 +1,246 @@
+name: DevSecOps
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------- Этап 1: секреты ----------
+  secrets:
+    permissions:
+      contents: read
+      pull-requests: read   # gitleaks-action читает список коммитов PR через API
+    name: Поиск секретов
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0        # вся история, а не только последний коммит
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_ENABLE_COMMENTS: "false"   # без комментариев в PR, write не нужен
+
+  # ---------- Этап 2: SAST ----------
+  sast:
+    name: Статический анализ
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: '3.11' }
+      - run: pip install -r requirements-dev.txt
+      - name: Bandit (отчёт)
+        run: bandit -r . -x ./tests,./.venv -f screen || true
+      - name: Bandit (ворота по MEDIUM)
+        run: bandit -r . -x ./tests,./.venv --severity-level medium --confidence-level medium
+      - name: Semgrep (общий пак Python)
+        if: ${{ !cancelled() }}
+        run: semgrep --config p/python --error .
+      - name: Semgrep (собственное правило: debug в FastAPI)
+        if: ${{ !cancelled() }}
+        run: semgrep --config .semgrep/fastapi-debug.yml --error .
+
+  # ---------- Этап 3: SCA ----------
+  sca:
+    name: Анализ зависимостей
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: '3.11' }
+      - name: pip-audit
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
+      - name: Trivy (ворота HIGH/CRITICAL)
+        if: ${{ !cancelled() }}
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+      - name: Сформировать SBOM
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: cyclonedx
+          output: sbom.cdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.cdx.json
+
+  # ---------- Этап 4: тесты ----------
+  tests:
+    name: Тесты
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Установить зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Запустить тесты
+        env:
+          VULNTRACK_SECRET_KEY: ${{ secrets.VULNTRACK_SECRET_KEY }}
+        run: pytest tests/ -v --tb=short
+
+  # ---------- Этап 5: сборка образа ----------
+  build:
+    name: Сборка образа
+    needs: [secrets, sast, sca, tests]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Собрать образ
+        run: docker build -f Dockerfile -t vulntrack:ci .
+      - name: Сохранить образ в файл
+        run: docker save -o vulntrack-image.tar vulntrack:ci
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vulntrack-image
+          path: vulntrack-image.tar
+          retention-days: 1
+
+  # ---------- Этап 6: скан образа ----------
+  image-scan:
+    name: Сканирование образа
+    needs: [build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: vulntrack-image
+      - name: Trivy по образу (ворота HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: image
+          input: vulntrack-image.tar
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+
+  # ---------- Этап 7: DAST ----------
+  dast:
+    name: DAST (ZAP)
+    needs: [image-scan]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vulntrack-image
+
+      - name: Поднять эфемерный кластер kind
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: dast
+          config: .github/kind-dast.yaml
+
+      - name: Загрузить проверенный образ в kind
+        run: kind load image-archive vulntrack-image.tar --name dast
+
+      - name: Пространство имён и одноразовые секреты стенда
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl -n vulntrack create secret generic vulntrack-secret \
+            --from-literal=POSTGRES_PASSWORD="$(openssl rand -hex 16)"  # gitleaks:allow
+          kubectl -n vulntrack create secret generic vulntrack-app-secret \
+            --from-literal=VULNTRACK_SECRET_KEY="$(openssl rand -hex 32)"  # gitleaks:allow
+
+      - name: Развернуть БД
+        run: |
+          kubectl apply -f k8s/01-config.yaml -f k8s/02-postgres.yaml
+          kubectl -n vulntrack rollout status statefulset/db --timeout=180s
+
+      - name: Развернуть приложение
+        run: |
+          sed 's#image: vulntrack:.*#image: vulntrack:ci#' k8s/03-web.yaml | kubectl apply -f -
+          kubectl -n vulntrack rollout status deployment/vulntrack-web --timeout=180s
+
+      - name: Доступ через NodePort и ожидание готовности
+        run: |
+          # port-forward рвётся под нагрузкой активного скана (журнал 2026-10-12) -> NodePort
+          # targetPort берём у исходного сервиса: expose ставит targetPort = port (80), а приложение слушает 8000
+          TP=$(kubectl -n vulntrack get svc vulntrack-web -o jsonpath='{.spec.ports[0].targetPort}')
+          kubectl -n vulntrack expose service vulntrack-web --name vulntrack-web-scan --type NodePort --target-port "$TP"
+          # фиксируем nodePort = порту, проброшенному в .github/kind-dast.yaml
+          kubectl -n vulntrack patch svc vulntrack-web-scan --type=json \
+            -p '[{"op":"replace","path":"/spec/ports/0/nodePort","value":30080}]'
+          TARGET="http://127.0.0.1:30080"
+          echo "TARGET=$TARGET" >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do
+            curl -fsS --max-time 5 "$TARGET/healthz" && exit 0
+            sleep 2
+          done
+          echo "::error::Приложение не ответило на /healthz по $TARGET"
+          # диагностика: на каком отрезке рвётся путь
+          kubectl -n vulntrack get svc,endpointslices,pods -o wide
+          CIP=$(kubectl -n vulntrack get svc vulntrack-web-scan -o jsonpath='{.spec.clusterIP}')
+          docker exec dast-control-plane curl -sS -m 5 "http://$CIP/healthz" || true
+          exit 1
+
+      - name: Сессия пользователя-сканера
+        run: |
+          U="zap$(date +%s)"; PASS="$(openssl rand -hex 16)"
+          curl -sS -o /dev/null -X POST "$TARGET/register" \
+            --data-urlencode "username=$U" --data-urlencode "password=$PASS" -d "team=default"
+          curl -sS -o /dev/null -D /tmp/login-headers.txt -c /tmp/jar.txt \
+            -X POST "$TARGET/login" \
+            --data-urlencode "username=$U" --data-urlencode "password=$PASS"
+          SESSION=$(awk '$6=="session"{print $7}' /tmp/jar.txt)
+          test -n "$SESSION" || { echo "::error::Вход не удался"; exit 1; }
+          echo "::add-mask::$SESSION"
+          echo "ZAP_AUTH_HEADER=Cookie" >> "$GITHUB_ENV"
+          echo "ZAP_AUTH_HEADER_VALUE=session=$SESSION" >> "$GITHUB_ENV"
+          echo "ZAP_AUTH_HEADER_SITE=127.0.0.1" >> "$GITHUB_ENV"
+
+      - name: ZAP — полное сканирование под пользователем
+        uses: zaproxy/action-full-scan@v0.13.0
+        with:
+          target: ${{ env.TARGET }}
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-I -m 2 -z "-config scanner.maxScanDurationInMins=10"'
+          allow_issue_writing: false
+          fail_action: true
+          artifact_name: zap_dast_report
+
+      - name: Стенд жив после сканирования (закрытые ворота)
+        if: ${{ !cancelled() }}
+        run: |
+          curl -fsS --max-time 5 "$TARGET/healthz" \
+            || { echo "::error::Стенд не отвечает после ZAP — результаты скана недостоверны"; exit 1; }
+
+      - name: Флаги cookie сессии
+        if: ${{ !cancelled() }}
+        run: |
+          grep -i '^set-cookie: session=' /tmp/login-headers.txt | sed 's/session=[^;]*/session=***/'
+          grep -qi '^set-cookie: session=.*httponly' /tmp/login-headers.txt \
+            || { echo "::error::Cookie session без HttpOnly"; exit 1; }
+
+  # ---------- Этап 8: развёртывание ----------
+  deploy:
+    name: Развёртывание
+    needs: [dast]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Развёртывание (заглушка: реестр и кластер не подключены)
+        run: echo "Все 7 ворот пройдены — образ vulntrack:${{ github.sha }} допущен к развёртыванию"

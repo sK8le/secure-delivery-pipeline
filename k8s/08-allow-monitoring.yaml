@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-metrics-from-monitoring
+  namespace: vulntrack
+spec:
+  podSelector:
+    matchLabels:
+      app: vulntrack-web          # кого разрешаем опрашивать — поды приложения
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8000               # только на порт метрик, не на всё

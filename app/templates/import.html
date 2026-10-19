@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Импорт отчёта — VulnTrack{% endblock %}
+{% block content %}
+<h1>Импорт отчёта сканера</h1>
+<p>Загрузите YAML-файл со списком уязвимостей вида:</p>
+<pre>- cve_id: CVE-2024-12345
+  title: Пример уязвимости
+  description: Описание
+  cvss_score: 7.5
+  severity: high</pre>
+<form method="post" action="/import" enctype="multipart/form-data">
+  <input type="file" name="file" accept=".yaml,.yml" required>
+  <button type="submit">Импортировать</button>
+</form>
+{% if imported is not none %}<p class="ok">Импортировано записей: {{ imported }}</p>{% endif %}
+{% if error %}<p class="error">Ошибка импорта: {{ error }}</p>{% endif %}
+{% endblock %}

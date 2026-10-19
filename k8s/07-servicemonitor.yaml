@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vulntrack-web
+  namespace: vulntrack
+  labels:
+    release: monitoring          # по этой метке Prometheus находит монитор
+spec:
+  selector:
+    matchLabels:
+      app: vulntrack-web          # к какому сервису цепляться
+  endpoints:
+    - port: http                  # имя порта (то самое, что мы проверили)
+      path: /metrics              # откуда брать метрики
+      interval: 15s               # как часто спрашивать

@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vulntrack-config
+  namespace: vulntrack
+data:
+  POSTGRES_DB: vulntrack
+  POSTGRES_USER: vulntrack
+# Секреты в репозиторий не кладутся. Создайте их в кластере вручную:
+#   kubectl -n vulntrack create secret generic vulntrack-secret \
+#     --from-literal=POSTGRES_PASSWORD=$(openssl rand -hex 16)
+#   kubectl -n vulntrack create secret generic vulntrack-app-secret \
+#     --from-literal=VULNTRACK_SECRET_KEY=$(openssl rand -hex 32)
