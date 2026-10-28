@@ -244,3 +244,14 @@ jobs:
     steps:
       - name: Развёртывание (заглушка, реестр и кластер не подключены)
         run: echo "Все 7 ворот пройдены — образ vulntrack:${{ github.sha }} допущен к развёртыванию"
+
+  # ---------- Итоговый контролёр для защиты ветки ----------
+  gates:
+    name: Все ворота пройдены
+    needs: [secrets, sast, sca, tests, build, image-scan, dast]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Проверить результаты всех ворот
+        run: |
+          echo '${{ toJSON(needs) }}' | jq -e 'to_entries | all(.value.result == "success")'
