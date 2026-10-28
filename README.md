@@ -4,7 +4,7 @@
 
 Защищённый конвейер непрерывной поставки веб-приложения: от коммита до работы в Kubernetes, с семью воротами безопасности и обнаружением атак в эксплуатации.
 
-Приложение — **VulnTrack**, трекер уязвимостей на FastAPI + PostgreSQL: аналитик импортирует отчёты сканеров и работает со списком уязвимостей своей команды.
+Приложение - **VulnTrack**, трекер уязвимостей на FastAPI + PostgreSQL: аналитик импортирует отчёты сканеров и работает со списком уязвимостей своей команды.
 
 **Стек:** Python 3.11 · FastAPI · SQLAlchemy · PostgreSQL 16 · Docker · Kubernetes (minikube, kind) · GitHub Actions · Gitleaks · Bandit · Semgrep · pip-audit · Trivy · OWASP ZAP · Prometheus · Grafana · Alertmanager
 
@@ -23,7 +23,7 @@
 | 5 | Сборка | Docker (`docker save` → артефакт) | Ошибка сборки |
 | 6 | Скан образа | Trivy image | HIGH/CRITICAL в итоговом образе |
 | 7 | DAST | kind + OWASP ZAP (аутентифицированный full scan) | Правило FAIL, недоступность стенда после скана, cookie без HttpOnly |
-| 8 | Деплой | — | Выполняется только для `push` в `main` после всех ворот |
+| 8 | Деплой | - | Выполняется только для `push` в `main` после всех ворот |
 
 Детали, которые стоит посмотреть в [`security.yml`](.github/workflows/security.yml):
 - `permissions: contents: read` на весь workflow, расширение прав только точечно;
@@ -102,4 +102,4 @@ VULNTRACK_SECRET_KEY=$(openssl rand -hex 32) pytest -q
 - Секреты хранятся в объектах Secret; для прода — Vault или Sealed Secrets.
 - `pip-audit` и `semgrep` в `requirements-dev.txt` не закреплены по версиям.
 - Остальные GitHub Actions подключены по тегам, по SHA закреплён только Trivy.
-- Деплой — заглушка: реестр и рабочий кластер не подключены.
+- Деплой -  заглушка: реестр и рабочий кластер не подключены.
