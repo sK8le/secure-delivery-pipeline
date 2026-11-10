@@ -101,7 +101,7 @@ def register_form(request: Request):
 @app.post("/register", response_class=HTMLResponse)
 def register_submit(
     request: Request,
-    username: str = Form(...),
+    username: str = Form(..., min_length=1, max_length=64, pattern=r"^[^\x00-\x1f\x7f]+$"),
     password: str = Form(...),
     db: Session = Depends(get_db),
 ):

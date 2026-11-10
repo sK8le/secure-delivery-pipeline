@@ -207,6 +207,17 @@ jobs:
           kubectl -n vulntrack exec -i deployment/vulntrack-web -- \
             python - < scripts/check_runtime_access.py > runtime-access.json
 
+      - name: Проверить отказ регистрации с длинным именем
+        run: |
+          mkdir -p dast-reports
+          CODE=$(curl -sS --max-time 15 -o /tmp/registration-validation-response.json -w '%{http_code}' \
+            -X POST "$TARGET/register" \
+            --data-urlencode "username=$(printf 'a%.0s' {1..65})" \
+            --data-urlencode "password=$(openssl rand -hex 16)")
+          printf '{"check":"registration_username_limit","status":%s,"expected":422}\n' "$CODE" \
+            > dast-reports/registration-validation.json
+          test "$CODE" = 422 || { echo "::error::Длинное имя должно отклоняться до записи в PostgreSQL: HTTP $CODE"; exit 1; }
+
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
