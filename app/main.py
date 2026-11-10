@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 
 import yaml
 from cvss import CVSS3
-from fastapi import FastAPI, Request, Depends, Form, UploadFile, File
+from fastapi import FastAPI, Request, Depends, Form, Query, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -102,7 +102,7 @@ def register_form(request: Request):
 def register_submit(
     request: Request,
     username: str = Form(..., min_length=1, max_length=64, pattern=r"^[^\x00-\x1f\x7f]+$"),
-    password: str = Form(...),
+    password: str = Form(..., max_length=4096, pattern=r"^[^\x00]*$"),
     db: Session = Depends(get_db),
 ):
     if db.query(User).filter_by(username=username).first():
@@ -136,8 +136,8 @@ def login_form(request: Request):
 @app.post("/login", response_class=HTMLResponse)
 def login_submit(
     request: Request,
-    username: str = Form(...),
-    password: str = Form(...),
+    username: str = Form(..., min_length=1, max_length=64, pattern=r"^[^\x00-\x1f\x7f]+$"),
+    password: str = Form(..., max_length=4096, pattern=r"^[^\x00]*$"),
     db: Session = Depends(get_db),
 ):
     user = db.query(User).filter(User.username == username).first()
@@ -203,7 +203,7 @@ def vulnerability_detail(vuln_id: int, request: Request, db: Session = Depends(g
 
 
 @app.get("/search", response_class=HTMLResponse)
-def search(request: Request, q: str = "", db: Session = Depends(get_db)):
+def search(request: Request, q: str = Query("", max_length=512, pattern=r"^[^\x00]*$"), db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     denied = team_access_error(request, user)
     if denied is not None:
