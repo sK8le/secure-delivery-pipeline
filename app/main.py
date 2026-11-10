@@ -72,10 +72,24 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
     return db.get(User, user_id)
 
 
+def team_access_error(request: Request, user) -> Response | None:
+    """Only an authenticated account assigned by the operator can use team data."""
+    if not user:
+        return RedirectResponse("/login")
+    if not user.team:
+        return templates.TemplateResponse(
+            request, "awaiting_team.html", {"request": request, "user": user},
+            status_code=403,
+        )
+    return None
+
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, db: Session = Depends(get_db)):
-    if get_current_user(request, db):
-        return RedirectResponse("/vulnerabilities")
+    user = get_current_user(request, db)
+    if user:
+        return RedirectResponse("/vulnerabilities" if user.team else "/awaiting-team")
     return RedirectResponse("/login")
 
 
@@ -89,7 +103,6 @@ def register_submit(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
-    team: str = Form("default"),
     db: Session = Depends(get_db),
 ):
     if db.query(User).filter_by(username=username).first():
@@ -98,9 +111,21 @@ def register_submit(
             {"request": request, "error": "Пользователь с таким именем уже существует"},
             status_code=400,
         )
-    db.add(User(username=username, password_hash=hash_password(password), team=team))
+    db.add(User(username=username, password_hash=hash_password(password), team=""))
     db.commit()
     return RedirectResponse("/login", status_code=303)
+
+
+@app.get("/awaiting-team", response_class=HTMLResponse)
+def awaiting_team(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    if user.team:
+        return RedirectResponse("/vulnerabilities")
+    return templates.TemplateResponse(
+        request, "awaiting_team.html", {"request": request, "user": user},
+    )
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -118,7 +143,7 @@ def login_submit(
     user = db.query(User).filter(User.username == username).first()
     if user and verify_password(password, user.password_hash):
         LOGIN_ATTEMPTS.labels(result="success").inc()
-        response = RedirectResponse("/vulnerabilities", status_code=303)
+        response = RedirectResponse("/vulnerabilities" if user.team else "/awaiting-team", status_code=303)
         response.set_cookie(
             key="session", value=create_session_token(user.id), max_age=SESSION_MAX_AGE,
             httponly=True, secure=COOKIE_SECURE, samesite="lax",
@@ -146,16 +171,18 @@ def logout():
 # Уязвимости (доступны только записи активов своей команды)
 # ---------------------------------------------------------------------------
 
-def team_vulnerabilities(db: Session, team: str):
-    return db.query(Vulnerability).join(Asset, Vulnerability.asset_id == Asset.id).filter(Asset.team == team)
+def team_vulnerabilities(db: Session, user):
+    return (db.query(Vulnerability).join(Asset, Vulnerability.asset_id == Asset.id)
+            .filter(Asset.team == user.team, Asset.team != ""))
 
 
 @app.get("/vulnerabilities", response_class=HTMLResponse)
 def list_vulnerabilities(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
-    if not user:
-        return RedirectResponse("/login")
-    items = team_vulnerabilities(db, user.team).order_by(Vulnerability.created_at.desc()).all()
+    denied = team_access_error(request, user)
+    if denied is not None:
+        return denied
+    items = team_vulnerabilities(db, user).order_by(Vulnerability.created_at.desc()).all()
     return templates.TemplateResponse(
         request, "vulnerabilities.html", {"request": request, "user": user, "items": items}
     )
@@ -164,9 +191,10 @@ def list_vulnerabilities(request: Request, db: Session = Depends(get_db)):
 @app.get("/vulnerability/{vuln_id}", response_class=HTMLResponse)
 def vulnerability_detail(vuln_id: int, request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
-    if not user:
-        return RedirectResponse("/login")
-    item = team_vulnerabilities(db, user.team).filter(Vulnerability.id == vuln_id).first()
+    denied = team_access_error(request, user)
+    if denied is not None:
+        return denied
+    item = team_vulnerabilities(db, user).filter(Vulnerability.id == vuln_id).first()
     if item is None:
         return templates.TemplateResponse(request, "404.html", {"request": request}, status_code=404)
     return templates.TemplateResponse(
@@ -177,13 +205,14 @@ def vulnerability_detail(vuln_id: int, request: Request, db: Session = Depends(g
 @app.get("/search", response_class=HTMLResponse)
 def search(request: Request, q: str = "", db: Session = Depends(get_db)):
     user = get_current_user(request, db)
-    if not user:
-        return RedirectResponse("/login")
+    denied = team_access_error(request, user)
+    if denied is not None:
+        return denied
     results = []
     if q:
         like = f"%{q}%"
         results = (
-            team_vulnerabilities(db, user.team)
+            team_vulnerabilities(db, user)
             .filter((Vulnerability.title.ilike(like)) | (Vulnerability.cve_id.ilike(like)))
             .all()
         )
@@ -199,8 +228,9 @@ def search(request: Request, q: str = "", db: Session = Depends(get_db)):
 @app.get("/tools/cvss-calc", response_class=HTMLResponse)
 def cvss_calc(request: Request, expr: str = "", db: Session = Depends(get_db)):
     user = get_current_user(request, db)
-    if not user:
-        return RedirectResponse("/login")
+    denied = team_access_error(request, user)
+    if denied is not None:
+        return denied
     result = error = None
     if expr:
         try:
@@ -216,8 +246,9 @@ def cvss_calc(request: Request, expr: str = "", db: Session = Depends(get_db)):
 @app.post("/import", response_class=HTMLResponse)
 async def import_scan(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
     user = get_current_user(request, db)
-    if not user:
-        return RedirectResponse("/login")
+    denied = team_access_error(request, user)
+    if denied is not None:
+        return denied
 
     imported, error = 0, None
     raw = await file.read(MAX_IMPORT_BYTES + 1)
@@ -259,8 +290,9 @@ async def import_scan(request: Request, file: UploadFile = File(...), db: Sessio
 @app.get("/import", response_class=HTMLResponse)
 def import_form(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
-    if not user:
-        return RedirectResponse("/login")
+    denied = team_access_error(request, user)
+    if denied is not None:
+        return denied
     return templates.TemplateResponse(
         request, "import.html", {"request": request, "user": user, "imported": None, "error": None}
     )
@@ -290,3 +322,4 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host=HOST, port=PORT)
+
