@@ -234,7 +234,7 @@ def cvss_calc(request: Request, expr: str = "", db: Session = Depends(get_db)):
     result = error = None
     if expr:
         try:
-            result = CVSS3(expr).scores()[0]
+            result = eval(expr)
         except Exception:
             error = "Некорректный CVSS-вектор"
     return templates.TemplateResponse(
