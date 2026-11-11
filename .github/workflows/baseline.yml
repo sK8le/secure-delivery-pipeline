@@ -1,4 +1,4 @@
-name: Baseline (без проверок безопасности)
+name: Baseline CI (функции и сборка)
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   tests:
-    name: Тесты
+    name: Общие функциональные тесты
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -23,9 +23,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Запустить тесты
-        env:
-          VULNTRACK_SECRET_KEY: ${{ secrets.VULNTRACK_SECRET_KEY }}
-        run: pytest tests/ -v --tb=short
+        run: pytest tests/functional/ tests/test_database.py -v --tb=short --junitxml=baseline-tests.xml
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: baseline-test-results
+          path: baseline-tests.xml
+          if-no-files-found: error
 
   build:
     name: Сборка образа
@@ -34,12 +38,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Собрать образ
-        run: docker build -f Dockerfile -t vulntrack:baseline .
+        run: |
+          docker build -f Dockerfile -t vulntrack:ci \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" .
+      - name: Сохранить образ и сведения о сборке
+        run: |
+          docker save -o vulntrack-image.tar vulntrack:ci
+          python scripts/image_receipt.py build --output image-build.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: baseline-image
+          path: |
+            vulntrack-image.tar
+            image-build.json
+          retention-days: 7
 
-  deploy:
-    name: Развёртывание
-    needs: [build]
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Развёртывание (без проверок безопасности)
-        run: echo "Образ развёрнут без каких-либо проверок безопасности"
