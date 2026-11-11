@@ -111,14 +111,21 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Собрать образ
-        run: docker build -f Dockerfile -t vulntrack:ci .
+        run: |
+          docker build -f Dockerfile -t vulntrack:ci \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" .
       - name: Сохранить образ в файл
-        run: docker save -o vulntrack-image.tar vulntrack:ci
+        run: |
+          docker save -o vulntrack-image.tar vulntrack:ci
+          python scripts/image_receipt.py build --output image-build.json
       - uses: actions/upload-artifact@v4
         with:
           name: vulntrack-image
-          path: vulntrack-image.tar
-          retention-days: 1
+          path: |
+            vulntrack-image.tar
+            image-build.json
+          retention-days: 7
 
   # ---------- Этап 6: скан образа ----------
   image-scan:
@@ -303,15 +310,48 @@ jobs:
           grep -qi '^set-cookie: session=.*httponly' /tmp/login-headers.txt \
             || { echo "::error::Cookie session без HttpOnly"; exit 1; }
 
-  # ---------- Этап 8: развёртывание ----------
+  # ---------- Публикация допуска для локальной службы доставки ----------
   deploy:
-    name: Развёртывание
-    needs: [dast]
+    name: Публикация проверенного образа
+    needs: [build, gates]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      packages: write
+    concurrency:
+      group: delivery-main
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      REGISTRY_USER: ${{ github.actor }}
     steps:
-      - name: Развёртывание (заглушка, реестр и кластер не подключены)
-        run: echo "Все 7 ворот пройдены — образ vulntrack:${{ github.sha }} допущен к развёртыванию"
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: vulntrack-image
+      - name: Войти в реестр временным токеном задания
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$REGISTRY_USER" --password-stdin
+      - name: Опубликовать тот же образ и проверить анонимное скачивание
+        run: python scripts/image_receipt.py publish --output deployment.json
+      - name: Опубликовать разрешение на доставку
+        run: |
+          TAG="delivery-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'Проверенный образ для коммита %s.\nЗапуск: %s/%s/actions/runs/%s\nВыкладка и проверка готовности выполняются локальной службой ВМ.\n' \
+            "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > delivery-notes.md
+          gh release create "$TAG" deployment.json --target "$GITHUB_SHA" \
+            --title "Проверенный образ: запуск ${GITHUB_RUN_NUMBER}" --notes-file delivery-notes.md \
+            --prerelease --latest=false
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: delivery-manifest
+          path: deployment.json
+          if-no-files-found: warn
 
   # ---------- Итоговый контролёр для защиты ветки ----------
   gates:
