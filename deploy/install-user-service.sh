@@ -10,5 +10,5 @@ install -m 600 "$project_directory/scripts/deploy_verified.py" "$project_directo
 install -m 600 "$project_directory/deploy/vulntrack-delivery.service" "$project_directory/deploy/vulntrack-delivery.timer" "$unit_directory/"
 systemctl --user daemon-reload
 printf '%s\n' 'Служба установлена. Таймер ещё не включён.'
-printf '%s\n' 'Проверка: /usr/bin/python3 ~/.local/lib/vulntrack-delivery/deploy_verified.py --check-only'
+printf '%s\n' 'Проверка: /usr/bin/python3 ~/.local/lib/vulntrack-delivery/deploy_verified.py --api-client gh --check-only'
 printf '%s\n' 'Включение: systemctl --user enable --now vulntrack-delivery.timer'

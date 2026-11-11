@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+from types import SimpleNamespace
 from urllib.error import HTTPError
 
 import pytest
@@ -27,6 +28,40 @@ def test_download_rejects_unexpected_origins_before_network_access(url):
 def test_redirect_cannot_escape_the_github_allowlist():
     with pytest.raises(DeliveryError, match='Only HTTPS'):
         agent.GitHubRedirects().redirect_request(None, None, 302, '', {}, 'http://169.254.169.254/')
+
+
+def test_authenticated_api_uses_only_get_and_the_existing_gh_login(monkeypatch):
+    monkeypatch.setattr(agent, 'API_CLIENT', 'gh')
+    commands = []
+    def execute(args, **kwargs):
+        commands.append(args)
+        return SimpleNamespace(returncode=0, stdout='HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n\r\n{"value":42}')
+    monkeypatch.setattr(agent.subprocess, 'run', execute)
+    assert agent.api(REPO, 'git/ref/heads/main') == {'value': 42}
+    assert commands == [['gh', 'api', '--hostname', 'github.com', '--method', 'GET', '--include', f'repos/{REPO}/git/ref/heads/main']]
+
+
+@pytest.mark.parametrize('status', [401, 403, 429, 500])
+def test_gh_refusal_never_falls_back_to_an_unchecked_delivery(monkeypatch, status):
+    monkeypatch.setattr(agent, 'API_CLIENT', 'gh')
+    monkeypatch.setattr(agent.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout=f'HTTP/2.0 {status} Error\n\n{{}}'))
+    with pytest.raises(DeliveryError, match=f'HTTP {status}'):
+        agent.api(REPO, 'git/ref/heads/main')
+
+
+def test_gh_missing_release_keeps_the_existing_idle_behavior(monkeypatch):
+    monkeypatch.setattr(agent, 'API_CLIENT', 'gh')
+    monkeypatch.setattr(agent.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout='HTTP/2.0 404 Not Found\n\n{}'))
+    with pytest.raises(HTTPError) as result:
+        agent.api(REPO, 'releases/tags/missing')
+    assert result.value.code == 404
+
+
+def test_gh_login_error_cannot_be_parsed_as_success(monkeypatch):
+    monkeypatch.setattr(agent, 'API_CLIENT', 'gh')
+    monkeypatch.setattr(agent.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout=''))
+    with pytest.raises(DeliveryError, match='Invalid GitHub CLI'):
+        agent.api(REPO, 'git/ref/heads/main')
 
 
 @pytest.fixture
