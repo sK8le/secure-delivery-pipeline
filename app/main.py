@@ -194,7 +194,7 @@ def vulnerability_detail(vuln_id: int, request: Request, db: Session = Depends(g
     denied = team_access_error(request, user)
     if denied is not None:
         return denied
-    item = team_vulnerabilities(db, user).filter(Vulnerability.id == vuln_id).first()
+    item = db.query(Vulnerability).filter(Vulnerability.id == vuln_id).first()
     if item is None:
         return templates.TemplateResponse(request, "404.html", {"request": request}, status_code=404)
     return templates.TemplateResponse(
