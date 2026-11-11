@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for a verified VulnTrack delivery every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=15s
+Unit=vulntrack-delivery.service
+
+[Install]
+WantedBy=timers.target
