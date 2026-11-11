@@ -95,9 +95,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Запустить тесты
-        env:
-          VULNTRACK_SECRET_KEY: ${{ secrets.VULNTRACK_SECRET_KEY }}
-        run: pytest tests/ -v --tb=short
+        run: pytest tests/ -v --tb=short --junitxml=test-results.xml
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: test-results
+          path: test-results.xml
+          if-no-files-found: error
 
   # ---------- Этап 5: сборка образа ----------
   build:
@@ -138,6 +142,7 @@ jobs:
   dast:
     name: DAST (ZAP)
     needs: [image-scan]
+    timeout-minutes: 25
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -197,36 +202,99 @@ jobs:
           docker exec dast-control-plane curl -sS -m 5 "http://$CIP/healthz" || true
           exit 1
 
+      - name: Проверить доступ через HTTP и PostgreSQL
+        run: |
+          kubectl -n vulntrack exec -i deployment/vulntrack-web -- \
+            python - < scripts/check_runtime_access.py > runtime-access.json
+
+      - name: Проверить отказ регистрации с длинным именем
+        run: |
+          mkdir -p dast-reports
+          CODE=$(curl -sS --max-time 15 -o /tmp/registration-validation-response.json -w '%{http_code}' \
+            -X POST "$TARGET/register" \
+            --data-urlencode "username=$(printf 'a%.0s' {1..65})" \
+            --data-urlencode "password=$(openssl rand -hex 16)")
+          printf '{"check":"registration_username_limit","status":%s,"expected":422}\n' "$CODE" \
+            > dast-reports/registration-validation.json
+          test "$CODE" = 422 || { echo "::error::Длинное имя должно отклоняться до записи в PostgreSQL: HTTP $CODE"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: runtime-access-report
+          path: runtime-access.json
+          if-no-files-found: error
+
       - name: Сессия пользователя-сканера
         run: |
-          U="zap$(date +%s)"; PASS="$(openssl rand -hex 16)"
-          curl -sS -o /dev/null -X POST "$TARGET/register" \
-            --data-urlencode "username=$U" --data-urlencode "password=$PASS" -d "team=default"
-          curl -sS -o /dev/null -D /tmp/login-headers.txt -c /tmp/jar.txt \
+          mkdir -p dast-reports
+          U="scanner-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          PASS="$(openssl rand -hex 16)"
+          echo "::add-mask::$PASS"
+          CODE=$(curl -fsS --max-time 15 -o /tmp/register-response.html -w '%{http_code}' \
+            -X POST "$TARGET/register" \
+            --data-urlencode "username=$U" --data-urlencode "password=$PASS")
+          test "$CODE" = 303 || { echo "::error::Регистрация сканера: HTTP $CODE"; exit 1; }
+          kubectl -n vulntrack exec deployment/vulntrack-web -- \
+            python -m app.manage assign-team --username "$U" --team "dast-$GITHUB_RUN_ID"
+          CODE=$(curl -fsS --max-time 15 -o /tmp/login-response.html -w '%{http_code}' \
+            -D /tmp/login-headers.txt -c /tmp/jar.txt \
             -X POST "$TARGET/login" \
-            --data-urlencode "username=$U" --data-urlencode "password=$PASS"
+            --data-urlencode "username=$U" --data-urlencode "password=$PASS")
+          test "$CODE" = 303 || { echo "::error::Вход сканера: HTTP $CODE"; exit 1; }
           SESSION=$(awk '$6=="session"{print $7}' /tmp/jar.txt)
           test -n "$SESSION" || { echo "::error::Вход не удался"; exit 1; }
           echo "::add-mask::$SESSION"
           echo "ZAP_AUTH_HEADER=Cookie" >> "$GITHUB_ENV"
           echo "ZAP_AUTH_HEADER_VALUE=session=$SESSION" >> "$GITHUB_ENV"
           echo "ZAP_AUTH_HEADER_SITE=127.0.0.1" >> "$GITHUB_ENV"
+          echo "DAST_USER=$U" >> "$GITHUB_ENV"
+          python scripts/dast_target.py --phase before --target "$TARGET" --username "$U" \
+            --cookie-file /tmp/jar.txt --state dast-reports/state.json --output dast-reports/before.json
 
       - name: ZAP — полное сканирование под пользователем
-        uses: zaproxy/action-full-scan@v0.13.0
-        with:
-          target: ${{ env.TARGET }}
-          rules_file_name: '.zap/rules.tsv'
-          cmd_options: '-I -m 2 -z "-config scanner.maxScanDurationInMins=10"'
-          allow_issue_writing: false
-          fail_action: true
-          artifact_name: zap_dast_report
+        run: |
+          # Only the ephemeral output directory needs to be writable by the ZAP user.
+          chmod 777 dast-reports
+          docker pull ghcr.io/zaproxy/zaproxy:stable
+          SCANNER_IMAGE=$(docker image inspect ghcr.io/zaproxy/zaproxy:stable --format '{{.Id}}')
+          docker image inspect "$SCANNER_IMAGE" --format '{{json .RepoDigests}}' > dast-reports/scanner-image.json
+          set +e
+          docker run --rm --network host -v "$PWD:/zap/wrk:ro" \
+            -v "$PWD/dast-reports:/zap/wrk/dast-reports:rw" -w /zap/wrk/dast-reports \
+            -e ZAP_AUTH_HEADER -e ZAP_AUTH_HEADER_VALUE -e ZAP_AUTH_HEADER_SITE \
+            "$SCANNER_IMAGE" zap-full-scan.py -t "$TARGET" -c /zap/wrk/.zap/rules.tsv \
+            -J /zap/wrk/dast-reports/zap.json -r /zap/wrk/dast-reports/zap.html \
+            --hook=/zap/wrk/.zap/scan_hooks.py -I -m 2 -T 3 \
+            -z "-host 127.0.0.1 -config scanner.maxScanDurationInMins=10 -config api.addrs.addr.name=^(zap|localhost|127[.]0[.]0[.]1|0:0:0:0:0:0:0:1|::1)$ -config api.addrs.addr.regex=true"
+          CODE=$?
+          set -e
+          printf '%s\n' "$CODE" > dast-reports/exit-code.txt
+          # The next gate validates findings, scanner errors, coverage, and 5xx.
 
-      - name: Стенд жив после сканирования (закрытые ворота)
+      - name: Проверить авторизацию и маршруты после сканирования
         if: ${{ !cancelled() }}
         run: |
-          curl -fsS --max-time 5 "$TARGET/healthz" \
-            || { echo "::error::Стенд не отвечает после ZAP — результаты скана недостоверны"; exit 1; }
+          python scripts/dast_target.py --phase after --target "$TARGET" --username "$DAST_USER" \
+            --cookie-file /tmp/jar.txt --state dast-reports/state.json --output dast-reports/after.json
+
+      - name: Допуск по находкам и достоверности DAST
+        if: ${{ !cancelled() }}
+        run: python scripts/dast_gate.py --directory dast-reports --rules .zap/rules.tsv --output dast-reports/gate.json
+
+      - name: Сохранить доказательства DAST
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-evidence
+          path: dast-reports/
+          if-no-files-found: error
+
+      - name: Диагностика стенда при отказе
+        if: ${{ failure() }}
+        run: |
+          kubectl -n vulntrack get pods,svc -o wide
+          kubectl -n vulntrack logs -l app=vulntrack-web --tail=100 --prefix=true
 
       - name: Флаги cookie сессии
         if: ${{ !cancelled() }}
@@ -244,3 +312,15 @@ jobs:
     steps:
       - name: Развёртывание (заглушка, реестр и кластер не подключены)
         run: echo "Все 7 ворот пройдены — образ vulntrack:${{ github.sha }} допущен к развёртыванию"
+
+  # ---------- Итоговый контролёр для защиты ветки ----------
+  gates:
+    name: Все ворота пройдены
+    needs: [secrets, sast, sca, tests, build, image-scan, dast]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Проверить результаты всех ворот
+        run: |
+          echo '${{ toJSON(needs) }}' | jq -e 'to_entries | all(.value.result == "success")'
+

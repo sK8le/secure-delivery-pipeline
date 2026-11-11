@@ -15,7 +15,8 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
-    team: Mapped[str] = mapped_column(String(64), default="default")
+    # Empty membership requires assignment by the operator before any data access.
+    team: Mapped[str] = mapped_column(String(64), default="")
 
     vulnerabilities: Mapped[list["Vulnerability"]] = relationship(
         back_populates="reported_by", cascade="all, delete-orphan"
@@ -56,3 +57,4 @@ class Vulnerability(Base):
 
     reported_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     reported_by: Mapped["User"] = relationship(back_populates="vulnerabilities")
+

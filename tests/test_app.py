@@ -11,7 +11,8 @@ os.environ.setdefault("VULNTRACK_COOKIE_SECURE", "false")  # TestClient рабо
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
-from app.database import init_db  # noqa: E402
+from app.manage import assign_team
+from app.database import SessionLocal, init_db  # noqa: E402
 
 init_db()
 
@@ -27,6 +28,8 @@ def new_user(team: str) -> TestClient:
     client = TestClient(app)
     name = f"u_{uuid.uuid4().hex[:8]}"
     client.post("/register", data={"username": name, "password": "s3cret-pass", "team": team})
+    with SessionLocal() as db:
+        assign_team(db, name, team)
     r = client.post("/login", data={"username": name, "password": "s3cret-pass"}, follow_redirects=False)
     assert r.status_code == 303
     return client
@@ -92,3 +95,4 @@ def test_import_rejects_malformed_report_without_details():
     r = client.post("/import", files={"file": ("r.yaml", b"!!python/object/apply:os.system ['id']", "text/plain")})
     assert "Не удалось разобрать файл" in r.text
     assert "python/object" not in r.text
+
