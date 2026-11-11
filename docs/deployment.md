@@ -21,7 +21,9 @@ flowchart LR
 
 Имя образа имеет вид `ghcr.io/sk8le/secure-delivery-pipeline:verified-<запуск>-<попытка>`. В Kubernetes используется неизменяемая ссылка `ghcr.io/sk8le/secure-delivery-pipeline@sha256:...`. Успешный запуск создаёт prerelease `delivery-<запуск>-<попытка>` с `deployment.json`; это запись доставки, а не ручная версия приложения.
 
-Задание публикации работает только на push в main, после итоговых ворот. Временный GITHUB_TOKEN имеет права публикации пакета и release только в этом задании. ВМ не требует GitHub-токенов: публичные сведения о запуске, release и публичный образ читаются анонимно.
+Задание публикации работает только на push в main, после итоговых ворот. Временный GITHUB_TOKEN имеет права публикации пакета и release только в этом задании. Публичный образ и release-файл скачиваются анонимно. Для метаданных API служба поддерживает анонимный режим и `--api-client gh`: второй использует уже настроенный вход GitHub CLI, выполняя только GET к github.com. Токен не копируется в аргументы, журнал, репозиторий или приложение.
+
+На текущей ВМ анонимный API выдал HTTP 403 из-за общего лимита по IP. Поэтому unit использует существующую авторизацию gh с отдельной квотой. Отказ API не ослабляет проверки и не разрешает непроверенную доставку. Для отдельной установки gh должен быть авторизован с правом чтения метаданных репозитория; если входа нет, его настраивает оператор. Проверить доступ без вывода секрета: `gh api rate_limit --jq '.resources.core | {limit,remaining,reset}'`.
 
 ## Первый запуск: публичность пакета
 
@@ -31,7 +33,7 @@ GitHub может создать новый пакет GHCR приватным, 
 
 ## Подготовка ВМ
 
-Требуются запущенный minikube, приложение `vulntrack-web` в namespace `vulntrack`, контейнер `web`, Python 3 и kubectl. ВМ должна иметь исходящий HTTPS-доступ к GitHub/GHCR. Контекст kubectl должен называться `minikube`.
+Требуются запущенный minikube, приложение `vulntrack-web` в namespace `vulntrack`, контейнер `web`, Python 3, kubectl и авторизованный gh для предлагаемого unit-файла. ВМ должна иметь исходящий HTTPS-доступ к GitHub/GHCR. Контекст kubectl должен называться `minikube`.
 
 Настройку cookie выбирает оператор: для текущего стенда по HTTP — `VULNTRACK_COOKIE_SECURE=false`, для HTTPS — `true`. Секреты приложения и БД сохраняются в существующем Deployment; служба их не создаёт и не меняет.
 
@@ -39,7 +41,7 @@ GitHub может создать новый пакет GHCR приватным, 
 
 ```bash
 bash deploy/install-user-service.sh
-/usr/bin/python3 ~/.local/lib/vulntrack-delivery/deploy_verified.py --check-only
+/usr/bin/python3 ~/.local/lib/vulntrack-delivery/deploy_verified.py --api-client gh --check-only
 ```
 
 Первый вывод может быть `no_new_verified_delivery`: для текущей main ещё нет разрешённой доставки, либо она уже установлена. Флаг `--check-only` не меняет Kubernetes.

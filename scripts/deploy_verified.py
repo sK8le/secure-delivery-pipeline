@@ -1,4 +1,4 @@
-"""Pull-based deployment: no GitHub runner, repository checkout or GitHub token on the VM."""
+"""Pull-based deployment with anonymous or GitHub CLI metadata access."""
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -17,6 +17,7 @@ else:
 
 MAX_JSON_BYTES = 1024 * 1024
 DOWNLOAD_HOSTS = {'api.github.com', 'github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com'}
+API_CLIENT = 'anonymous'
 
 
 def validate_download_url(url):
@@ -42,6 +43,24 @@ def download(url):
 
 
 def api(repository, path):
+    if API_CLIENT == 'gh':
+        # gh reads its own existing login; no token is copied into this process's
+        # arguments, logs, repository, or requests to the release asset CDN.
+        result = subprocess.run(
+            ['gh', 'api', '--hostname', 'github.com', '--method', 'GET', '--include',
+             f'repos/{repository}/{path}'],
+            capture_output=True, text=True, timeout=30,
+        )
+        require(len(result.stdout.encode('utf-8')) <= MAX_JSON_BYTES, 'GitHub CLI response too large')
+        headers, separator, body = result.stdout.replace('\r\n', '\n').partition('\n\n')
+        status_line = headers.splitlines()[0] if headers else ''
+        match = re.fullmatch(r'HTTP/\S+ (\d{3})(?: .*)?', status_line)
+        require(separator and match, 'Invalid GitHub CLI API response')
+        status = int(match.group(1))
+        if status == 404:
+            raise HTTPError(f'https://api.github.com/repos/{repository}/{path}', 404, 'Not found', {}, None)
+        require(result.returncode == 0 and status == 200, f'GitHub CLI API refused the request (HTTP {status})')
+        return json.loads(body)
     return json.loads(download(f'https://api.github.com/repos/{repository}/{path}'))
 
 
@@ -162,11 +181,15 @@ def save(path, result):
 
 
 def main():
+    global API_CLIENT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repository', default='sK8le/secure-delivery-pipeline')
+    parser.add_argument('--api-client', choices=['anonymous', 'gh'], default='anonymous',
+                        help='Use an existing gh login for a separate authenticated API quota')
     parser.add_argument('--state-directory', type=Path, default=Path.home() / '.local/state/vulntrack-delivery')
     parser.add_argument('--check-only', action='store_true', help='Validate candidate without changing Kubernetes')
     args = parser.parse_args()
+    API_CLIENT = args.api_client
     args.state_directory.mkdir(parents=True, exist_ok=True)
     import fcntl  # Linux only; the service runs on the deployment VM.
     with (args.state_directory / 'lock').open('a', encoding='utf-8') as lock:
