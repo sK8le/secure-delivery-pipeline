@@ -115,6 +115,15 @@ jobs:
           docker build -f Dockerfile -t vulntrack:ci \
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" .
+      - name: Проверить непривилегированного пользователя образа
+        run: python scripts/check_image_user.py --image vulntrack:ci --output image-user-check.json
+      - name: Сохранить результат проверки пользователя образа
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-user-policy
+          path: image-user-check.json
+          if-no-files-found: error
       - name: Сохранить образ в файл
         run: |
           docker save -o vulntrack-image.tar vulntrack:ci
