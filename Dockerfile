@@ -23,7 +23,6 @@ RUN chown appuser:appuser /app
 
 
 RUN python -m pip uninstall -y setuptools wheel pip
-USER 10001
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
