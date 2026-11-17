@@ -18,6 +18,10 @@ else:
 MAX_JSON_BYTES = 1024 * 1024
 DOWNLOAD_HOSTS = {'api.github.com', 'github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com'}
 API_CLIENT = 'anonymous'
+READINESS_CHECK = (
+    "import json, urllib.request; "
+    "print(json.dumps(json.load(urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=5))))"
+)
 
 
 def validate_download_url(url):
@@ -150,9 +154,12 @@ class Cluster:
             allowed = {manifest['image'].split('@', 1)[1], manifest['image_config_digest']}
             require(match and match.group(1) in allowed, 'Running image digest mismatch')
             identities.append({'pod': pod['metadata']['name'], 'image_id': image_id})
-        code = "import json,urllib.request; print(json.dumps(json.load(urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=10))))"
-        health = json.loads(self.command('exec', 'deployment/vulntrack-web', '--', 'python', '-c', code, timeout=30))
-        require(health.get('status') == 'ok', 'Application health check failed')
+        for identity in identities:
+            result = self.command(
+                'exec', 'pod/' + identity['pod'], '-c', 'web', '--', 'python', '-c', READINESS_CHECK,
+                timeout=15,
+            )
+            require(json.loads(result) == {'status': 'ok'}, 'Application database readiness check failed')
         return identities
 
 
@@ -162,14 +169,22 @@ def deploy(cluster, manifest):
     changed = cluster.replace_image(before, manifest['image'])
     try:
         identities = cluster.ready(manifest)
-    except (DeliveryError, subprocess.SubprocessError, KeyError, ValueError) as error:
-        current = cluster.deployment()
-        if (cluster.web(current)[1]['image'] == manifest['image']
-                and current['metadata']['generation'] == changed['metadata']['generation']):
-            cluster.replace_image(current, previous_image)
-            cluster.command('rollout', 'status', 'deployment/vulntrack-web', '--timeout=180s', timeout=210)
-            raise DeliveryError('Deployment failed; previous image restored: ' + type(error).__name__) from error
-        raise DeliveryError('Deployment failed; concurrent change detected, no rollback performed') from error
+    except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as error:
+        try:
+            current = cluster.deployment()
+            same_generation = (cluster.web(current)[1]['image'] == manifest['image']
+                               and current['metadata']['generation'] == changed['metadata']['generation'])
+            if same_generation:
+                cluster.replace_image(current, previous_image)
+                cluster.command('rollout', 'status', 'deployment/vulntrack-web', '--timeout=180s', timeout=210)
+        except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as rollback_error:
+            raise DeliveryError(
+                f'Deployment failed ({type(error).__name__}); rollback could not be confirmed '
+                f'({type(rollback_error).__name__})'
+            ) from rollback_error
+        if not same_generation:
+            raise DeliveryError('Deployment failed; concurrent change detected, no rollback performed') from error
+        raise DeliveryError('Deployment failed; previous image restored: ' + type(error).__name__) from error
     return {**manifest, 'event': 'deployment_succeeded', 'deployed_at': datetime.now(timezone.utc).isoformat(),
             'previous_image': previous_image, 'pods': identities}
 
@@ -178,6 +193,32 @@ def save(path, result):
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(result, indent=2), encoding='utf-8')
     temporary.replace(path)
+
+
+def deliver_once(repository, state_directory, check_only=False):
+    state_path = state_directory / 'last-success.json'
+    previous = json.loads(state_path.read_text(encoding='utf-8')) if state_path.exists() else {}
+    manifest = candidate(repository, previous)
+    if manifest is None:
+        return {'event': 'no_new_verified_delivery'}
+
+    identity = {name: manifest[name] for name in ('repository', 'revision', 'run_id', 'run_attempt')}
+    tag = release_tag(manifest['run_id'], manifest['run_attempt'])
+    attempt_path = state_directory / 'attempts' / f'{tag}.json'
+    if attempt_path.exists():
+        return {'event': 'delivery_already_attempted', **identity}
+    if check_only:
+        return {'event': 'candidate_validated', **manifest}
+
+    require(api(repository, 'git/ref/heads/main')['object']['sha'] == manifest['revision'],
+            'Main changed while validating delivery')
+    cluster = Cluster(state_directory)
+    # Persist before changing the cluster, including if the service stops mid-rollout.
+    attempt_path.parent.mkdir(exist_ok=True)
+    save(attempt_path, {**identity, 'started_at': datetime.now(timezone.utc).isoformat()})
+    result = deploy(cluster, manifest)
+    save(state_path, result)
+    return result
 
 
 def main():
@@ -197,19 +238,7 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
-        state_path = args.state_directory / 'last-success.json'
-        previous = json.loads(state_path.read_text(encoding='utf-8')) if state_path.exists() else {}
-        manifest = candidate(args.repository, previous)
-        if manifest is None:
-            print(json.dumps({'event': 'no_new_verified_delivery'}))
-            return
-        if args.check_only:
-            print(json.dumps({'event': 'candidate_validated', **manifest}, indent=2))
-            return
-        # Recheck main just before the first cluster mutation.
-        require(api(args.repository, 'git/ref/heads/main')['object']['sha'] == manifest['revision'], 'Main changed while validating delivery')
-        result = deploy(Cluster(args.state_directory), manifest)
-        save(state_path, result)
+        result = deliver_once(args.repository, args.state_directory, args.check_only)
         print(json.dumps(result, indent=2))
 
 

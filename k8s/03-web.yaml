@@ -69,7 +69,7 @@ spec:
             periodSeconds: 2
             failureThreshold: 60
           readinessProbe:
-            httpGet: { path: /healthz, port: 8000 }
+            httpGet: { path: /readyz, port: 8000 }
             initialDelaySeconds: 3
             periodSeconds: 5
             timeoutSeconds: 3        # по умолчанию 1 с

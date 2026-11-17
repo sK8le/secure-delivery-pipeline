@@ -30,6 +30,5 @@ HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
     CMD python -c "import urllib.request,sys; \
         sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz').status==200 else 1)"
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "120", \
-     "--worker-class", "uvicorn.workers.UvicornWorker", "app.main:app"]
+CMD ["sh", "/app/app/start_web.sh"]
 
