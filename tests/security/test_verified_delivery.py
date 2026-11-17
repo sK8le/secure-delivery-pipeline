@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import subprocess
 from types import SimpleNamespace
 from urllib.error import HTTPError
 
@@ -221,6 +222,45 @@ def test_rollback_does_not_overwrite_a_concurrent_manual_deployment(manifest):
     assert cluster.web(cluster.current)[1]['image'] == 'vulntrack:human-change'
 
 
+def test_timer_does_not_retry_a_failed_attempt_and_allows_a_new_one(tmp_path, monkeypatch, manifest):
+    release = manifest.copy()
+    cluster = FakeCluster('health')
+    monkeypatch.setattr(agent, 'candidate', lambda *args: release)
+    monkeypatch.setattr(agent, 'Cluster', lambda _: cluster)
+    monkeypatch.setattr(agent, 'api', lambda *args: {'object': {'sha': REVISION}})
+
+    with pytest.raises(DeliveryError, match='previous image restored'):
+        agent.deliver_once(REPO, tmp_path)
+    assert not (tmp_path / 'last-success.json').exists()
+    assert agent.deliver_once(REPO, tmp_path)['event'] == 'delivery_already_attempted'
+    assert cluster.changes == [IMAGE, 'vulntrack:previous']
+
+    release = {**release, 'run_attempt': 3}
+    cluster.failure = None
+    assert agent.deliver_once(REPO, tmp_path)['event'] == 'deployment_succeeded'
+    assert json.loads((tmp_path / 'last-success.json').read_text())['run_attempt'] == 3
+
+
+def test_check_only_and_changed_main_do_not_consume_attempt(tmp_path, monkeypatch, manifest):
+    monkeypatch.setattr(agent, 'candidate', lambda *args: manifest)
+    monkeypatch.setattr(agent, 'api', lambda *args: {'object': {'sha': 'e' * 40}})
+    assert agent.deliver_once(REPO, tmp_path, check_only=True)['event'] == 'candidate_validated'
+    with pytest.raises(DeliveryError, match='Main changed'):
+        agent.deliver_once(REPO, tmp_path)
+    assert not (tmp_path / 'attempts').exists()
+
+
+def test_unconfirmed_rollback_is_not_reported_as_restored(manifest, monkeypatch):
+    cluster = FakeCluster('health')
+
+    def rollback_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired('kubectl', 1)
+
+    monkeypatch.setattr(cluster, 'command', rollback_timeout)
+    with pytest.raises(DeliveryError, match='rollback could not be confirmed'):
+        agent.deploy(cluster, manifest)
+
+
 @pytest.mark.parametrize('image_id,accepted', [(CONFIG, True), (REGISTRY_DIGEST, True), ('sha256:' + 'e' * 64, False)])
 def test_running_container_identity_must_match_the_approved_image(tmp_path, monkeypatch, manifest, image_id, accepted):
     cluster = agent.Cluster(tmp_path)
@@ -234,6 +274,30 @@ def test_running_container_identity_must_match_the_approved_image(tmp_path, monk
     else:
         with pytest.raises(DeliveryError, match='digest mismatch'):
             cluster.ready(manifest)
+
+
+def test_delivery_refuses_success_when_second_replica_cannot_reach_db(tmp_path, monkeypatch, manifest):
+    cluster = agent.Cluster(tmp_path)
+    pods = [{'metadata': {'name': name}, 'spec': {'containers': [{'name': 'web', 'image': IMAGE}]},
+             'status': {'containerStatuses': [{'name': 'web', 'ready': True, 'imageID': CONFIG}]}}
+            for name in ('first', 'second')]
+    checked = []
+
+    def command(*args, **kwargs):
+        if args[0] == 'rollout':
+            return ''
+        if args[:2] == ('get', 'deployment'):
+            return json.dumps(deployment(IMAGE))
+        if args[:2] == ('get', 'pods'):
+            return json.dumps({'items': pods})
+        assert args[0] == 'exec' and '/readyz' in args[-1]
+        checked.append(args[1])
+        return json.dumps({'status': 'unavailable' if args[1] == 'pod/second' else 'ok'})
+
+    monkeypatch.setattr(cluster, 'command', command)
+    with pytest.raises(DeliveryError, match='database readiness'):
+        cluster.ready(manifest)
+    assert checked == ['pod/first', 'pod/second']
 
 
 @pytest.fixture
