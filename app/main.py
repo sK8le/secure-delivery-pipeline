@@ -10,10 +10,12 @@ from contextlib import asynccontextmanager
 import yaml
 from cvss import CVSS3
 from fastapi import FastAPI, Request, Depends, Form, Query, UploadFile, File
-from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import CollectorRegistry, Counter, generate_latest, multiprocess, CONTENT_TYPE_LATEST
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.config import COOKIE_SECURE, HOST, PORT
@@ -304,12 +306,26 @@ def import_form(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/metrics")
 def metrics():
+    if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+        return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/healthz")
 def healthz():
     return {"status": "ok"}
+
+
+@app.get("/readyz", include_in_schema=False)
+def readyz(db: Session = Depends(get_db)):
+    try:
+        # The users table must be accessible even on a fresh, empty database.
+        db.execute(select(User.id).limit(1)).first()
+    except SQLAlchemyError:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    return JSONResponse({"status": "ok"})
 
 
 @app.exception_handler(Exception)
